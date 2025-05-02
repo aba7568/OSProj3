@@ -1,14 +1,57 @@
 #include "io_helper.h"
 #include "request.h"
+#include <pthread.h>
 
 #define MAXBUF (8192)
-
+#define QUEUE_CAPACITY 64
 
 //
 //	TODO: add code to create and manage the buffer
-//
+//request
+typedef struct {
+    int fd;
+    char filename[MAXBUF];
+    int filesize;
+} request;
 
-//
+//synchronization
+static request queue[QUEUE_CAPACITY];
+static int q_front = 0, q_len = 0;
+static pthread_mutex_t q_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t q_not_empty = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t q_not_full  = PTHREAD_COND_INITIALIZER;
+
+// check if the queue is empty/full
+static int is_empty() {
+    return q_len == 0;
+}
+static int is_full() {
+    return q_len == QUEUE_CAPACITY;
+}
+
+//adds request ot block if full
+static void enqueue(request req) {
+    pthread_mutex_lock(&q_lock);
+    while (is_full())
+        pthread_cond_wait(&q_not_full, &q_lock);
+    queue[(q_front + q_len) % QUEUE_CAPACITY] = req;
+    q_len++;
+    pthread_cond_signal(&q_not_empty);
+    pthread_mutex_unlock(&q_lock);
+}
+
+//remove request from queue
+static request dequeue() {
+    pthread_mutex_lock(&q_lock);
+    while (is_empty())
+        pthread_cond_wait(&q_not_empty, &q_lock);
+    request req = queue[q_front];
+    q_front = (q_front + 1) % QUEUE_CAPACITY;
+    q_len--;
+    pthread_cond_signal(&q_not_full);
+    pthread_mutex_unlock(&q_lock);
+    return req;
+}
 // Sends out HTTP response in case of errors
 //
 void request_error(int fd, char *cause, char *errnum, char *shortmsg, char *longmsg) {
@@ -66,7 +109,7 @@ int request_parse_uri(char *uri, char *filename, char *cgiargs) {
     if (!strstr(uri, "cgi")) { 
 	// static
 	strcpy(cgiargs, "");
-	sprintf(filename, ".%s", uri);
+	sprintf(filename, "%s", uri);
 	if (uri[strlen(uri)-1] == '/') {
 	    strcat(filename, "index.html");
 	}
@@ -102,11 +145,13 @@ void request_get_filetype(char *filename, char *filetype) {
 //
 // Handles requests for static content
 //
+#ifndef CLIENT
 void request_serve_static(int fd, char *filename, int filesize) {
     int srcfd;
     char *srcp, filetype[MAXBUF], buf[MAXBUF];
     
     request_get_filetype(filename, filetype);
+    
     srcfd = open_or_die(filename, O_RDONLY, 0);
     
     // Rather than call read() to read the file into memory, 
@@ -128,6 +173,7 @@ void request_serve_static(int fd, char *filename, int filesize) {
     write_or_die(fd, srcp, filesize);
     munmap_or_die(srcp, filesize);
 }
+#endif
 
 //
 // Fetches the requests from the buffer and handles them (thread logic)
@@ -162,10 +208,14 @@ void request_handle(int fd) {
     is_static = request_parse_uri(uri, filename, cgiargs);
     
 	// get some data regarding the requested file, also check if requested file is present on server
-    if (stat(filename, &sbuf) < 0) {
+    char fullpath[MAXBUF];
+    snprintf(fullpath, sizeof(fullpath), "%s%s", web_root, filename);
+
+    if (stat(fullpath, &sbuf) < 0) {
 		request_error(fd, filename, "404", "Not found", "server could not find this file");
 		return;
     }
+
     
 	// verify if requested content is static
     if (is_static) {
@@ -173,7 +223,8 @@ void request_handle(int fd) {
 			request_error(fd, filename, "403", "Forbidden", "server could not read this file");
 			return;
 		}
-		
+		request_serve_static(fd, fullpath, sbuf.st_size);
+       
 		// TODO: write code to add HTTP requests in the buffer based on the scheduling policy
 
     } else {
