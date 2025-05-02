@@ -1,0 +1,4 @@
+/home/adesola/OSProj3/build/CMakeFiles/server.dir
+/home/adesola/OSProj3/build/CMakeFiles/client.dir
+/home/adesola/OSProj3/build/CMakeFiles/edit_cache.dir
+/home/adesola/OSProj3/build/CMakeFiles/rebuild_cache.dir
