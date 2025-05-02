@@ -178,9 +178,15 @@ void request_serve_static(int fd, char *filename, int filesize) {
 //
 // Fetches the requests from the buffer and handles them (thread logic)
 //
-void* thread_request_serve_static(void* arg)
-{
+void* thread_request_serve_static(void* arg) {
 	// TODO: write code to actualy respond to HTTP requests
+    while (1) { 
+	request req = dequeue();
+        request_serve_static(req.fd, req.filename, req.filesize);
+        close_or_die(req.fd);
+    }
+    return NULL;
+}
 }
 
 //
