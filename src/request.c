@@ -2,40 +2,68 @@
 #include "request.h"
 #include <pthread.h>
 
-#define MAXBUF (8192)
-#define QUEUE_CAPACITY 64
+extern int scheduling_algo;
+extern int buffer_max_size;
+extern const char *web_root;
 
 //
 //	TODO: add code to create and manage the buffer
-//request
-typedef struct {
-    int fd;
-    char filename[MAXBUF];
-    int filesize;
-} request;
 
 //synchronization
-static request queue[QUEUE_CAPACITY];
+request *queue;
 static int q_front = 0, q_len = 0;
 static pthread_mutex_t q_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t q_not_empty = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t q_not_full  = PTHREAD_COND_INITIALIZER;
 
-// check if the queue is empty/full
+// check if the queue is empty/ful
 static int is_empty() {
     return q_len == 0;
 }
 static int is_full() {
-    return q_len == QUEUE_CAPACITY;
+    return q_len == buffer_max_size;
 }
 
 //adds request ot block if full
 static void enqueue(request req) {
     pthread_mutex_lock(&q_lock);
+
+    //random
+    if (scheduling_algo == 2) {
+        if (is_full()) {
+            int victim = rand() % buffer_max_size;
+            queue[victim] = req;
+            fprintf(stderr, "[RANDOM] Evicted index %d for new request\n", victim);
+        } else {
+            int idx = (q_front + q_len) % buffer_max_size;
+            queue[idx] = req;
+            q_len++;
+        }
+
+        pthread_cond_signal(&q_not_empty);
+        pthread_mutex_unlock(&q_lock);
+        return;
+    }
+    //waiting
     while (is_full())
         pthread_cond_wait(&q_not_full, &q_lock);
-    queue[(q_front + q_len) % QUEUE_CAPACITY] = req;
-    q_len++;
+
+    if (scheduling_algo == 1) {
+        //SFF
+        queue[q_len] = req;
+        q_len++;
+        for (int i = q_len - 1; i > 0 && queue[i].filesize < queue[i - 1].filesize; i--) {
+            request tmp = queue[i];
+            queue[i] = queue[i - 1];
+            queue[i - 1] = tmp;
+        }
+    } else {
+	//FIFO
+        int idx = (q_front + q_len) % buffer_max_size;
+        queue[idx] = req;
+        q_len++;
+    }
+
     pthread_cond_signal(&q_not_empty);
     pthread_mutex_unlock(&q_lock);
 }
@@ -45,8 +73,17 @@ static request dequeue() {
     pthread_mutex_lock(&q_lock);
     while (is_empty())
         pthread_cond_wait(&q_not_empty, &q_lock);
-    request req = queue[q_front];
-    q_front = (q_front + 1) % QUEUE_CAPACITY;
+    request req;
+    if (scheduling_algo == 1) {
+	req = queue[0];
+	for (int i = 1; i < q_len; i++){
+	    queue[i - 1] = queue[i];
+        }
+    } else {
+        req = queue[q_front];
+        q_front = (q_front + 1) % buffer_max_size;
+    }
+
     q_len--;
     pthread_cond_signal(&q_not_full);
     pthread_mutex_unlock(&q_lock);
@@ -180,13 +217,28 @@ void request_serve_static(int fd, char *filename, int filesize) {
 //
 void* thread_request_serve_static(void* arg) {
 	// TODO: write code to actualy respond to HTTP requests
-    while (1) { 
-	request req = dequeue();
+    while (1) {
+        pthread_mutex_lock(&q_lock);
+        while (is_empty()) {
+            pthread_cond_wait(&q_not_empty, &q_lock);
+        }
+
+        request req = queue[0];
+        for (int i = 1; i < q_len; i++) {
+            queue[i - 1] = queue[i];
+        }
+
+        q_len--;
+	pthread_cond_signal(&q_not_full);
+        pthread_mutex_unlock(&q_lock);
+
+        const char* sched_names[] = {"FIFO", "SFF", "RANDOM"};
+        printf("serving URI=%s (fd=%d) with %s\n", req.filename, req.fd, sched_names[scheduling_algo]);
+
         request_serve_static(req.fd, req.filename, req.filesize);
         close_or_die(req.fd);
     }
     return NULL;
-}
 }
 
 //
@@ -229,9 +281,15 @@ void request_handle(int fd) {
 			request_error(fd, filename, "403", "Forbidden", "server could not read this file");
 			return;
 		}
-		request_serve_static(fd, fullpath, sbuf.st_size);
-       
+//		request_serve_static(fd, fullpath, sbuf.st_size);
+
 		// TODO: write code to add HTTP requests in the buffer based on the scheduling policy
+		request req;
+                req.fd = fd;
+		strcpy(req.filename, fullpath);
+		req.filesize = sbuf.st_size;
+		enqueue(req);
+
 
     } else {
 		request_error(fd, filename, "501", "Not Implemented", "server does not serve dynamic content request");
