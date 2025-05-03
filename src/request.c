@@ -33,7 +33,6 @@ static void enqueue(request req) {
         if (is_full()) {
             int victim = rand() % buffer_max_size;
             queue[victim] = req;
-            fprintf(stderr, "[RANDOM] Evicted index %d for new request\n", victim);
         } else {
             int idx = (q_front + q_len) % buffer_max_size;
             queue[idx] = req;

@@ -3,11 +3,19 @@
 //
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
 #include "request.h"
 #include "io_helper.h"
 #include <pthread.h>
 
+int scheduling_algo;
+int buffer_max_size;
+int buffer_size;
+int num_threads;
+
 char default_root[] = ".";
+const char *web_root;
 
 //
 // ./wserver [-d basedir] [-p port] [-t threads] [-b buffersize] [-s schedalg (0 - FIFO, 1 - SFF, 2 - Random)]
@@ -16,12 +24,11 @@ int main(int argc, char *argv[]) {
     int c;
     char *root_dir = default_root;
     int port = 10000;
-    
-	// below default values are defined in 'request.h'
-    int num_threads = DEFAULT_THREADS;
-    int buffer_max_size = DEFAULT_BUFFER_SIZE;
-    int scheduling_algo = DEFAULT_SCHED_ALGO;	
-    
+
+    num_threads = DEFAULT_THREADS;
+    buffer_max_size = DEFAULT_BUFFER_SIZE;
+    scheduling_algo = DEFAULT_SCHED_ALGO;
+
 	// fetch (and set) values from command line arguments
     while ((c = getopt(argc, argv, "hd:p:t:b:s:")) != -1)
 		switch (c) {
@@ -47,16 +54,29 @@ int main(int argc, char *argv[]) {
 				fprintf(stderr, "usage: wserver [-d basedir] [-p port] [-t threads] [-b buffersize] [-s schedalg (0 - FIFO, 1 - SFF, 2 - Random)]\n");
 				exit(1);
 		}
+    // allocate the request buffer
+    extern request *queue;
+    queue = malloc(sizeof(request) * buffer_max_size);
+    if (queue == NULL) {
+    	perror("failed to allocate request queue");
+    	exit(1);
+    }
+    // Debug
+    printf("[DEBUG] threads=%d, buf_max=%d, sched=%d\n",
+           num_threads, buffer_max_size, scheduling_algo);
+    //end debug
+    web_root = root_dir;
 
     // browse to webserver's root directory
     chdir_or_die(root_dir);
 
 	// create the thread pool
 	pthread_t thread_pool[num_threads];
-	for(int i=0; i<num_threads; i++)
+	for(int i=0; i<num_threads; i++) {
     	pthread_create(&thread_pool[i], NULL, thread_request_serve_static, NULL);
+	pthread_detach(thread_pool[i]);
+	}
 
-	int buffer_size = 0;	// initial buffer size
 	
     // open the socket connection
     int listen_fd = open_listen_fd_or_die(port);
